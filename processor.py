@@ -1,0 +1,460 @@
+import os
+import pandas as pd
+import logging
+from typing import List, Dict, Tuple
+from datetime import datetime
+from tqdm import tqdm
+import time
+from colorama import Fore, Style, init
+import threading
+import queue as _queue
+
+from config import Config
+from llm_client import LLMClient
+from specs_lookup import SpecsLookup
+
+# Initialize colorama for colored output
+init()
+
+logger = logging.getLogger(__name__)
+
+class ProductDescriptionProcessor:
+    """Main processor for generating product descriptions"""
+    
+    def __init__(self, config: Config):
+        self.config = config
+        self.llm_client = LLMClient(config)
+        # Initialize specs lookup (optional if file missing)
+        try:
+            self.specs_lookup = SpecsLookup(self.config.SPECS_CSV_PATH)
+            if self.specs_lookup.has_data():
+                print(f"{Fore.GREEN}✅ Loaded specs from: {self.config.SPECS_CSV_PATH}{Style.RESET_ALL}")
+            else:
+                print(f"{Fore.YELLOW}⚠️ Specs file not available or empty: {self.config.SPECS_CSV_PATH}{Style.RESET_ALL}")
+        except Exception as e:
+            print(f"{Fore.YELLOW}⚠️ Could not load specs file: {str(e)}{Style.RESET_ALL}")
+            self.specs_lookup = None
+        self.stats = {
+            'processed': 0,
+            'failed': 0,
+            'skipped': 0,
+            'start_time': None,
+            'end_time': None
+        }
+        
+        # Create output directory if it doesn't exist
+        os.makedirs(self.config.OUTPUT_DIR, exist_ok=True)
+    
+    def _is_specs_available(self) -> bool:
+        """Safely check if specs lookup is available and has data"""
+        try:
+            return (hasattr(self, 'specs_lookup') and 
+                   self.specs_lookup is not None and 
+                   self.specs_lookup.has_data())
+        except Exception:
+            return False
+    
+    def _analyze_csv_structure(self, df: pd.DataFrame):
+        """Analyze CSV structure to help identify manufacturer columns"""
+        print(f"\n{Fore.CYAN}CSV Structure Analysis:{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}{'='*50}{Style.RESET_ALL}")
+        
+        # Look for potential manufacturer-related columns
+        manufacturer_keywords = ['manufacturer', 'brand', 'family', 'make', 'company', 'vendor', 'supplier']
+        potential_manufacturer_cols = []
+        
+        for col in df.columns:
+            col_lower = str(col).lower()
+            for keyword in manufacturer_keywords:
+                if keyword in col_lower:
+                    potential_manufacturer_cols.append(col)
+                    break
+        
+        if potential_manufacturer_cols:
+            print(f"{Fore.GREEN}Potential manufacturer columns found:{Style.RESET_ALL}")
+            for col in potential_manufacturer_cols:
+                non_empty_count = df[col].dropna().shape[0]
+                unique_values = df[col].dropna().unique()
+                print(f"  - {col}: {non_empty_count} non-empty values, {len(unique_values)} unique values")
+                if len(unique_values) <= 10:
+                    print(f"    Sample values: {list(unique_values)}")
+        else:
+            print(f"{Fore.YELLOW}No obvious manufacturer columns found{Style.RESET_ALL}")
+        
+        # Show column types and non-null counts
+        print(f"\n{Fore.CYAN}Column Summary:{Style.RESET_ALL}")
+        for col in df.columns:
+            non_null_count = df[col].count()
+            null_count = df[col].isnull().sum()
+            print(f"  {col}: {non_null_count} non-null, {null_count} null")
+        
+        print(f"{Fore.CYAN}{'='*50}{Style.RESET_ALL}\n")
+    
+    def validate_csv_structure(self, df: pd.DataFrame) -> bool:
+        """Validate that the CSV has the required structure for processing"""
+        try:
+            # Check for required columns
+            if 'Part Number' not in df.columns:
+                print(f"{Fore.RED}❌ Missing required column: 'Part Number'{Style.RESET_ALL}")
+                print(f"{Fore.YELLOW}Available columns: {list(df.columns)}{Style.RESET_ALL}")
+                return False
+            
+            # Check for data
+            if len(df) == 0:
+                print(f"{Fore.RED}❌ CSV file is empty{Style.RESET_ALL}")
+                return False
+            
+            # Check for non-empty part numbers
+            valid_parts = df['Part Number'].dropna()
+            if len(valid_parts) == 0:
+                print(f"{Fore.RED}❌ No valid part numbers found in CSV{Style.RESET_ALL}")
+                return False
+            
+            print(f"{Fore.GREEN}✅ CSV structure validation passed{Style.RESET_ALL}")
+            print(f"{Fore.CYAN}Found {len(valid_parts)} valid part numbers{Style.RESET_ALL}")
+            return True
+            
+        except Exception as e:
+            print(f"{Fore.RED}❌ CSV validation error: {str(e)}{Style.RESET_ALL}")
+            return False
+    
+    def process_csv(self, input_file: str, output_file: str = None) -> str:
+        """
+        Process a CSV file and generate descriptions for all products
+        
+        Args:
+            input_file: Path to input CSV file
+            output_file: Path to output CSV file (optional)
+            
+        Returns:
+            Path to the output file
+        """
+        self.stats['start_time'] = datetime.now()
+        
+        print(f"{Fore.CYAN}Starting product description generation...{Style.RESET_ALL}")
+        print(f"{Fore.YELLOW}Input file: {input_file}{Style.RESET_ALL}")
+        
+        # Load CSV file
+        try:
+            # Try different encodings for CSV reading
+            try:
+                df = pd.read_csv(input_file, encoding='utf-8')
+            except UnicodeDecodeError:
+                try:
+                    df = pd.read_csv(input_file, encoding='latin-1')
+                except Exception as e:
+                    # Final fallback with error handling
+                    df = pd.read_csv(input_file, encoding='utf-8', errors='replace')
+            
+            # Remove unnamed columns (columns that start with 'Unnamed:')
+            unnamed_cols = [col for col in df.columns if str(col).startswith('Unnamed:')]
+            if unnamed_cols:
+                print(f"{Fore.YELLOW}Removing {len(unnamed_cols)} unnamed columns{Style.RESET_ALL}")
+                df = df.drop(columns=unnamed_cols)
+            
+            print(f"{Fore.GREEN}Loaded {len(df)} products from CSV{Style.RESET_ALL}")
+        except Exception as e:
+            print(f"{Fore.RED}Error loading CSV file: {str(e)}{Style.RESET_ALL}")
+            raise
+        
+        # Validate CSV structure
+        # required_columns = ['Part Number', 'Manufacturer']
+        required_columns = ['Part Number']
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        if missing_columns:
+            print(f"{Fore.RED}Missing required columns: {missing_columns}{Style.RESET_ALL}")
+            raise ValueError(f"CSV must contain columns: {required_columns}")
+        
+        # Check if manufacturer column exists, if not create a default one
+        if 'Manufacturer' not in df.columns:
+            print(f"{Fore.YELLOW}No Manufacturer column found, using default manufacturer{Style.RESET_ALL}")
+            df['Manufacturer'] = 'Unknown Manufacturer'
+        else:
+            # Manufacturer column exists, check if it has data
+            non_empty_manufacturers = df['Manufacturer'].dropna()
+            if len(non_empty_manufacturers) > 0:
+                print(f"{Fore.GREEN}Found {len(non_empty_manufacturers)} products with manufacturer info{Style.RESET_ALL}")
+                print(f"{Fore.CYAN}Sample manufacturers: {list(non_empty_manufacturers.unique())[:5]}{Style.RESET_ALL}")
+            else:
+                print(f"{Fore.YELLOW}Manufacturer column exists but is empty, using default manufacturer{Style.RESET_ALL}")
+                df['Manufacturer'] = 'Unknown Manufacturer'
+        
+        # Debug: Show column names and first few rows
+        print(f"{Fore.CYAN}Available columns: {list(df.columns)}{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}First row sample: {dict(df.iloc[0]) if len(df) > 0 else 'No data'}{Style.RESET_ALL}")
+        
+        # Analyze CSV structure for potential manufacturer columns
+        self._analyze_csv_structure(df)
+        
+        # Test LLM connection
+        print(f"{Fore.CYAN}Testing LLM connection...{Style.RESET_ALL}")
+        if not self.llm_client.test_connection():
+            print(f"{Fore.RED}Failed to connect to LLM service. Please check your setup.{Style.RESET_ALL}")
+            raise ConnectionError("LLM service not available")
+        print(f"{Fore.GREEN}LLM connection successful!{Style.RESET_ALL}")
+        
+        # Generate output filename
+        if not output_file:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_file = os.path.join(
+                self.config.OUTPUT_DIR, 
+                f"processed_{timestamp}.csv"
+            )
+        
+        # Process products and save results one by one
+        self._process_products_streaming(df, output_file)
+        
+        self.stats['end_time'] = datetime.now()
+        self._print_summary(output_file)
+        
+        return output_file
+    
+    def _process_products_streaming(self, df: pd.DataFrame, output_file: str):
+        """
+        Process all products in the DataFrame and save results one by one to CSV
+        
+        Args:
+            df: DataFrame containing product data
+            output_file: Path to output CSV file
+        """
+        # Filter out rows with missing data
+        # valid_df = df.dropna(subset=['Part Number', 'Manufacturer'])
+        valid_df = df.dropna(subset=['Part Number'])
+        skipped_count = len(df) - len(valid_df)
+        if skipped_count > 0:
+            print(f"{Fore.YELLOW}Skipped {skipped_count} rows with missing data{Style.RESET_ALL}")
+        
+        print(f"{Fore.CYAN}Processing {len(valid_df)} products...{Style.RESET_ALL}")
+        
+        # Create output CSV file with headers
+        output_columns = list(valid_df.columns) + ['WEB TITLE', 'WEB DESCRIPTION']
+        with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
+            import csv
+            writer = csv.writer(csvfile)
+            writer.writerow(output_columns)
+        
+        # Ensure we have the required columns
+        if 'Part Number' not in valid_df.columns:
+            raise ValueError("Part Number column is missing from valid data")
+        if 'Manufacturer' not in valid_df.columns:
+            raise ValueError("Manufacturer column is missing from valid data")
+        
+        # Process in batches
+        for i in tqdm(range(0, len(valid_df), self.config.BATCH_SIZE), 
+                     desc="Processing batches"):
+            batch = valid_df.iloc[i:i + self.config.BATCH_SIZE]
+            self._process_batch_streaming(batch, output_file)
+            
+            # Add delay between batches to avoid overwhelming the API
+            if i + self.config.BATCH_SIZE < len(valid_df):
+                time.sleep(1)
+        
+        print(f"{Fore.GREEN}All results saved to: {output_file}{Style.RESET_ALL}")
+    
+    def _process_batch_streaming(self, batch_df: pd.DataFrame, output_file: str):
+        """
+        Process a batch of products and save results directly to CSV
+        
+        Args:
+            batch_df: DataFrame containing a batch of products
+            output_file: Path to output CSV file
+        """
+        for _, row in batch_df.iterrows():
+            try:
+                part_number = str(row['Part Number']).strip()
+                if not part_number:
+                    print(f"{Fore.YELLOW}Skipping row with empty part number{Style.RESET_ALL}")
+                    # Write row with error message
+                    self._write_row_to_csv(row, "SKIPPED", "Empty part number", output_file)
+                    continue
+                
+                # Get manufacturer from various possible columns
+                manufacturer = 'Unknown Manufacturer'
+                if 'Manufacturer' in row and pd.notna(row['Manufacturer']):
+                    manufacturer = str(row['Manufacturer']).strip()
+                    if not manufacturer:
+                        manufacturer = 'Unknown Manufacturer'
+                else:
+                    manufacturer = 'Unknown Manufacturer'
+                
+                if not manufacturer or manufacturer == 'Unknown Manufacturer':
+                    print(f"{Fore.YELLOW}Warning: No manufacturer found for {part_number}, using default{Style.RESET_ALL}")
+                else:
+                    print(f"{Fore.CYAN}Using manufacturer: {manufacturer} for {part_number}{Style.RESET_ALL}")
+                
+                reliable_specs = None
+                if self._is_specs_available():
+                    reliable_specs = self.specs_lookup.get_specs(part_number)
+                    if reliable_specs:
+                        print(f"{Fore.CYAN}Found specs for {part_number}: {len(reliable_specs)} fields{Style.RESET_ALL}")
+                    else:
+                        print(f"{Fore.YELLOW}No specs found for {part_number}{Style.RESET_ALL}")
+                else:
+                    print(f"{Fore.YELLOW}Specs lookup not available for {part_number}{Style.RESET_ALL}")
+ 
+                title, description = self.llm_client.generate_content(
+                    part_number,
+                    manufacturer,
+                    reliable_specs=reliable_specs
+                )
+                
+                # Write result directly to CSV
+                self._write_row_to_csv(row, title, description, output_file)
+                self.stats['processed'] += 1
+                
+                # Print progress for first few items
+                if self.stats['processed'] <= 5:
+                    print(f"{Fore.GREEN}✓ Generated: {part_number} - {manufacturer}{Style.RESET_ALL}")
+                 
+            except Exception as e:
+                part_num = str(row.get('Part Number', 'UNKNOWN')) if 'Part Number' in row else 'UNKNOWN'
+                logger.error(f"Failed to process {part_num}: {str(e)}")
+                # Write error row to CSV
+                self._write_row_to_csv(row, "ERROR", f"Failed to generate: {str(e)}", output_file)
+                self.stats['failed'] += 1
+                
+                print(f"{Fore.RED}✗ Failed: {part_num}{Style.RESET_ALL}")
+         
+    def _write_row_to_csv(self, row: pd.Series, title: str, description: str, output_file: str):
+        """Write a single row with generated content to CSV file"""
+        try:
+            import csv
+            with open(output_file, 'a', newline='', encoding='utf-8') as csvfile:
+                writer = csv.writer(csvfile)
+                # Write original row data plus generated content
+                row_data = list(row.values) + [title, description]
+                writer.writerow(row_data)
+        except Exception as e:
+            print(f"{Fore.RED}Error writing to CSV: {str(e)}{Style.RESET_ALL}")
+            logger.error(f"Failed to write row to CSV: {str(e)}")
+    
+    def _print_summary(self, output_file: str):
+        """Print processing summary"""
+        duration = self.stats['end_time'] - self.stats['start_time']
+        
+        print(f"\n{Fore.CYAN}{'='*50}{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}PROCESSING SUMMARY{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}{'='*50}{Style.RESET_ALL}")
+        print(f"{Fore.GREEN}✓ Successfully processed: {self.stats['processed']}{Style.RESET_ALL}")
+        print(f"{Fore.RED}✗ Failed: {self.stats['failed']}{Style.RESET_ALL}")
+        print(f"{Fore.YELLOW}⏭ Skipped: {self.stats['skipped']}{Style.RESET_ALL}")
+        print(f"⏱ Duration: {duration}")
+        print(f"📁 Output file: {output_file}")
+        print(f"{Fore.CYAN}{'='*50}{Style.RESET_ALL}")
+    
+    def process_single_product(self, part_number: str, manufacturer: str) -> Tuple[str, str]:
+        """
+        Process a single product for testing
+        
+        Args:
+            part_number: Product part number
+            manufacturer: Product manufacturer
+            
+        Returns:
+            Tuple of (title, description)
+        """
+        print(f"{Fore.CYAN}Testing with single product: {part_number} - {manufacturer}{Style.RESET_ALL}")
+        
+        # Fast-fail if LLM is not available
+        if not self.llm_client.test_connection():
+            raise ConnectionError("LLM service not available. Please run Setup and ensure the model is installed.")
+
+        try:
+            reliable_specs = None
+            if self._is_specs_available():
+                reliable_specs = self.specs_lookup.get_specs(part_number)
+
+            print(f"{Fore.CYAN}Generating content...{Style.RESET_ALL}")
+
+            result_queue: _queue.Queue = _queue.Queue(maxsize=1)
+
+            def _worker():
+                try:
+                    title, description = self.llm_client.generate_content(
+                        part_number,
+                        manufacturer,
+                        reliable_specs=reliable_specs
+                    )
+                    result_queue.put((title, description))
+                except Exception as e:  # propagate exception through queue
+                    result_queue.put(e)
+
+            thread = threading.Thread(target=_worker, daemon=True)
+            thread.start()
+            thread.join(timeout=self.config.REQUEST_TIMEOUT)
+
+            if thread.is_alive():
+                raise TimeoutError("LLM generation timed out. Ensure the model is downloaded (Setup), the Ollama service is running, or try a smaller model.")
+
+            result = result_queue.get()
+            if isinstance(result, Exception):
+                raise result
+            title, description = result
+             
+            print(f"\n{Fore.GREEN}Generated Content:{Style.RESET_ALL}")
+            print(f"{Fore.YELLOW}Title:{Style.RESET_ALL} {title}")
+            print(f"{Fore.YELLOW}Description:{Style.RESET_ALL} {description}")
+            
+            return title, description
+            
+        except Exception as e:
+            print(f"{Fore.RED}Error: {str(e)}{Style.RESET_ALL}")
+            raise 
+    
+    def test_csv_load(self, input_file: str) -> bool:
+        """Test if a CSV file can be loaded and has the right structure"""
+        try:
+            print(f"{Fore.CYAN}Testing CSV file: {input_file}{Style.RESET_ALL}")
+            
+            # Try to load the CSV
+            try:
+                df = pd.read_csv(input_file, encoding='utf-8')
+            except UnicodeDecodeError:
+                try:
+                    df = pd.read_csv(input_file, encoding='latin-1')
+                except Exception as e:
+                    df = pd.read_csv(input_file, encoding='utf-8', errors='replace')
+            
+            print(f"{Fore.GREEN}✅ CSV loaded successfully: {len(df)} rows{Style.RESET_ALL}")
+            print(f"{Fore.CYAN}Columns: {list(df.columns)}{Style.RESET_ALL}")
+            
+            # Validate structure
+            if self.validate_csv_structure(df):
+                print(f"{Fore.GREEN}✅ CSV structure is valid{Style.RESET_ALL}")
+                return True
+            else:
+                print(f"{Fore.RED}❌ CSV structure validation failed{Style.RESET_ALL}")
+                return False
+                
+        except Exception as e:
+            print(f"{Fore.RED}❌ CSV test failed: {str(e)}{Style.RESET_ALL}")
+            return False 
+    
+    def test_specs_lookup(self, part_number: str = None) -> bool:
+        """Test the specs lookup functionality"""
+        try:
+            if not self._is_specs_available():
+                print(f"{Fore.YELLOW}⚠️ Specs lookup not available{Style.RESET_ALL}")
+                return False
+            
+            if part_number:
+                specs = self.specs_lookup.get_specs(part_number)
+                if specs:
+                    print(f"{Fore.GREEN}✅ Found specs for {part_number}: {len(specs)} fields{Style.RESET_ALL}")
+                    print(f"{Fore.CYAN}Sample specs: {dict(list(specs.items())[:3])}{Style.RESET_ALL}")
+                    return True
+                else:
+                    print(f"{Fore.YELLOW}⚠️ No specs found for {part_number}{Style.RESET_ALL}")
+                    return False
+            else:
+                # Test with first available part number
+                if hasattr(self.specs_lookup, '_index') and self.specs_lookup._index:
+                    test_part = list(self.specs_lookup._index.keys())[0]
+                    return self.test_specs_lookup(test_part)
+                else:
+                    print(f"{Fore.YELLOW}⚠️ No part numbers indexed in specs{Style.RESET_ALL}")
+                    return False
+                    
+        except Exception as e:
+            print(f"{Fore.RED}❌ Specs lookup test failed: {str(e)}{Style.RESET_ALL}")
+            return False 

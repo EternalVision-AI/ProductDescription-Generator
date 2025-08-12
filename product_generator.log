@@ -1,0 +1,3 @@
+2025-08-06 18:08:34,666 - llm_client - INFO - Ollama client configured with host: llama3.1:8b
+2025-08-06 18:08:45,849 - llm_client - ERROR - Error generating content for HDA36100: [WinError 10054] An existing connection was forcibly closed by the remote host
+2025-08-06 18:08:45,849 - retry.api - WARNING - [WinError 10054] An existing connection was forcibly closed by the remote host, retrying in 2 seconds...
