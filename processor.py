@@ -254,7 +254,7 @@ class ProductDescriptionProcessor:
             import csv
             writer = csv.writer(csvfile)
             writer.writerow(output_columns)
- 
+        
         # Process in batches
         total_count = len(valid_df)
         done_count = 0
@@ -366,12 +366,12 @@ class ProductDescriptionProcessor:
                 self._write_row_to_csv(row, title, description, output_file)
                 self.stats['processed'] += 1
                 processed_rows += 1
-                 
+                
                 # Print progress for first few items
                 if self.stats['processed'] <= 5:
                     print(f"{Fore.GREEN}✓ Generated: {part_number} - {manufacturer}{Style.RESET_ALL}")
                     self._log(f"Generated: {part_number} - {manufacturer}")
-                 
+                
             except Exception as e:
                 part_num = str(row.get('Part Number', 'UNKNOWN')) if 'Part Number' in row else 'UNKNOWN'
                 logger.error(f"Failed to process {part_num}: {str(e)}")
@@ -624,7 +624,7 @@ class ProductDescriptionProcessor:
             if isinstance(result, Exception):
                 raise result
             title, description = result
-             
+            
             print(f"\n{Fore.GREEN}Generated Content:{Style.RESET_ALL}")
             print(f"{Fore.YELLOW}Title:{Style.RESET_ALL} {title}")
             print(f"{Fore.YELLOW}Description:{Style.RESET_ALL} {description}")
