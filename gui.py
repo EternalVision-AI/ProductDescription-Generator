@@ -350,6 +350,8 @@ class ProductGeneratorGUI:
                 # Apply HPS settings and recreate processor to ensure fresh config
                 self.config.SPECS_CSV_PATH = self.specs_path_var.get().strip() or self.config.SPECS_CSV_PATH
                 self.processor = ProductDescriptionProcessor(self.config)
+                # Wire UI callbacks
+                self.processor.log_callback = self.enqueue_message
                 if not self.use_specs_var.get():
                     # Disable specs by clearing lookup
                     self.processor.specs_lookup = None
@@ -397,6 +399,16 @@ class ProductGeneratorGUI:
                 # Recreate processor so it picks up current HPS settings
                 self.config.SPECS_CSV_PATH = self.specs_path_var.get().strip() or self.config.SPECS_CSV_PATH
                 self.processor = ProductDescriptionProcessor(self.config)
+                # Wire UI callbacks
+                self.processor.log_callback = self.enqueue_message
+                def _on_progress(done, total):
+                    try:
+                        ratio = 0 if total == 0 else float(done)/float(total)
+                    except Exception:
+                        ratio = 0
+                    self.root.after(0, self.progress_bar.set, ratio)
+                    self.root.after(0, self.status_var.set, f"Processing {done}/{total} ({int(ratio*100)}%)")
+                self.processor.progress_callback = _on_progress
                 if not self.use_specs_var.get():
                     self.processor.specs_lookup = None
                  

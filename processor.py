@@ -41,10 +41,29 @@ class ProductDescriptionProcessor:
             'start_time': None,
             'end_time': None
         }
+        # Optional UI hooks (set by GUI)
+        self.log_callback = None
+        self.progress_callback = None
         
         # Create output directory if it doesn't exist
         os.makedirs(self.config.OUTPUT_DIR, exist_ok=True)
-    
+
+    def _log(self, message: str):
+        try:
+            if self.log_callback:
+                self.log_callback(message)
+        except Exception:
+            pass
+        # Always print to console too
+        print(message)
+
+    def _emit_progress(self, done: int, total: int):
+        try:
+            if self.progress_callback:
+                self.progress_callback(done, total)
+        except Exception:
+            pass
+
     def _is_specs_available(self) -> bool:
         """Safely check if specs lookup is available and has data"""
         try:
@@ -227,6 +246,7 @@ class ProductDescriptionProcessor:
             print(f"{Fore.YELLOW}Skipped {skipped_count} rows with missing data{Style.RESET_ALL}")
         
         print(f"{Fore.CYAN}Processing {len(valid_df)} products...{Style.RESET_ALL}")
+        self._log(f"Processing {len(valid_df)} products...")
         
         # Create output CSV file with headers
         output_columns = list(valid_df.columns) + ['WEB TITLE', 'WEB DESCRIPTION']
@@ -236,18 +256,24 @@ class ProductDescriptionProcessor:
             writer.writerow(output_columns)
  
         # Process in batches
+        total_count = len(valid_df)
+        done_count = 0
+        self._emit_progress(done_count, total_count)
         for i in tqdm(range(0, len(valid_df), self.config.BATCH_SIZE), 
                      desc="Processing batches"):
             batch = valid_df.iloc[i:i + self.config.BATCH_SIZE]
-            self._process_batch_streaming(batch, output_file)
+            processed_in_batch = self._process_batch_streaming(batch, output_file)
+            done_count += processed_in_batch
+            self._emit_progress(done_count, total_count)
             
             # Add delay between batches to avoid overwhelming the API
             if i + self.config.BATCH_SIZE < len(valid_df):
                 time.sleep(1)
         
         print(f"{Fore.GREEN}All results saved to: {output_file}{Style.RESET_ALL}")
+        self._log(f"All results saved to: {output_file}")
     
-    def _process_batch_streaming(self, batch_df: pd.DataFrame, output_file: str):
+    def _process_batch_streaming(self, batch_df: pd.DataFrame, output_file: str) -> int:
         """
         Process a batch of products and save results directly to CSV
         
@@ -255,6 +281,7 @@ class ProductDescriptionProcessor:
             batch_df: DataFrame containing a batch of products
             output_file: Path to output CSV file
         """
+        processed_rows = 0
         for _, row in batch_df.iterrows():
             try:
                 # Use dynamic column mapping if available
@@ -282,6 +309,7 @@ class ProductDescriptionProcessor:
                     print(f"{Fore.YELLOW}Skipping row with empty part number{Style.RESET_ALL}")
                     # Write row with error message
                     self._write_row_to_csv(row, "SKIPPED", "Empty part number", output_file)
+                    processed_rows += 1
                     continue
                 
                 # Get manufacturer from detected column
@@ -295,8 +323,10 @@ class ProductDescriptionProcessor:
                 
                 if not manufacturer or manufacturer == 'Unknown Manufacturer':
                     print(f"{Fore.YELLOW}Warning: No manufacturer found for {part_number}, using default{Style.RESET_ALL}")
+                    self._log(f"No manufacturer found for {part_number}, using default")
                 else:
                     print(f"{Fore.CYAN}Using manufacturer: {manufacturer} for {part_number}{Style.RESET_ALL}")
+                    self._log(f"Using manufacturer: {manufacturer} for {part_number}")
                  
                 # Prefer specs from the dedicated specs CSV (dynamic via LLM) if available
                 reliable_specs: Dict[str, str] = {}
@@ -305,6 +335,7 @@ class ProductDescriptionProcessor:
                     if csv_specs:
                         reliable_specs.update(csv_specs)
                         print(f"{Fore.CYAN}Found specs in specs CSV for {part_number}: {len(csv_specs)} fields{Style.RESET_ALL}")
+                        self._log(f"Found specs in specs CSV for {part_number}: {len(csv_specs)} fields")
  
                 # Always merge ALL non-empty input row columns as specs (user requirement)
                 row_specs: Dict[str, str] = {}
@@ -320,20 +351,26 @@ class ProductDescriptionProcessor:
                 if row_specs:
                     reliable_specs.update(row_specs)
                     print(f"{Fore.CYAN}Merged {len(row_specs)} input columns for {part_number}{Style.RESET_ALL}")
+                    self._log(f"Merged {len(row_specs)} input columns for {part_number}")
  
                 title, description = self.llm_client.generate_content(
                     part_number,
                     manufacturer,
                     reliable_specs=reliable_specs
                 )
-                
+
+                # Enforce title length <= 80
+                title = self._limit_title_length(title, 80)
+
                 # Write result directly to CSV
                 self._write_row_to_csv(row, title, description, output_file)
                 self.stats['processed'] += 1
+                processed_rows += 1
                  
                 # Print progress for first few items
                 if self.stats['processed'] <= 5:
                     print(f"{Fore.GREEN}✓ Generated: {part_number} - {manufacturer}{Style.RESET_ALL}")
+                    self._log(f"Generated: {part_number} - {manufacturer}")
                  
             except Exception as e:
                 part_num = str(row.get('Part Number', 'UNKNOWN')) if 'Part Number' in row else 'UNKNOWN'
@@ -341,9 +378,12 @@ class ProductDescriptionProcessor:
                 # Write error row to CSV
                 self._write_row_to_csv(row, "ERROR", f"Failed to generate: {str(e)}", output_file)
                 self.stats['failed'] += 1
+                processed_rows += 1
                  
                 print(f"{Fore.RED}✗ Failed: {part_num}{Style.RESET_ALL}")
-         
+                self._log(f"Failed: {part_num} → {str(e)}")
+        return processed_rows
+    
     def _write_row_to_csv(self, row: pd.Series, title: str, description: str, output_file: str):
         """Write a single row with generated content to CSV file"""
         try:
@@ -356,6 +396,34 @@ class ProductDescriptionProcessor:
         except Exception as e:
             print(f"{Fore.RED}Error writing to CSV: {str(e)}{Style.RESET_ALL}")
             logger.error(f"Failed to write row to CSV: {str(e)}")
+
+    def _limit_title_length(self, title: str, max_len: int) -> str:
+        if not title:
+            return title
+        if len(title) <= max_len:
+            return title
+        # Abbreviation passes
+        replacements = {
+            'Ampere': 'Amp', 'Amperes': 'Amp', 'Amps': 'Amp',
+            'Voltage': 'V', 'Volt': 'V',
+            'Ground Fault Circuit Interrupter (GFCI)': 'GFCI',
+            'Ground Fault Circuit Interrupter': 'GFCI',
+            'Molded Case Circuit Breaker': 'MCCB',
+            'Circuit Breaker': 'Breaker',
+            'Solid-State Protection': 'Solid-State',
+            'Solid State Protection': 'Solid-State',
+            'Bolt-On Connections': 'Bolt-On',
+            '2-Pole': '2P', '3-Pole': '3P', '4-Pole': '4P',
+            '  ': ' '
+        }
+        shortened = title
+        for src, dst in replacements.items():
+            shortened = shortened.replace(src, dst)
+        shortened = ' '.join(shortened.split())  # normalize spaces
+        if len(shortened) <= max_len:
+            return shortened
+        # Hard cap
+        return shortened[:max_len].rstrip()
     
     def _determine_column_mapping_with_llm(self, df: pd.DataFrame):
         """Use LLM to dynamically determine column mapping and relevant specs from CSV structure"""
@@ -529,6 +597,7 @@ class ProductDescriptionProcessor:
                 reliable_specs = self.specs_lookup.get_specs(part_number)
 
             print(f"{Fore.CYAN}Generating content...{Style.RESET_ALL}")
+            self._log(f"Generating content for {part_number}...")
 
             result_queue: _queue.Queue = _queue.Queue(maxsize=1)
 
@@ -539,6 +608,7 @@ class ProductDescriptionProcessor:
                         manufacturer,
                         reliable_specs=reliable_specs
                     )
+                    title = self._limit_title_length(title, 80)
                     result_queue.put((title, description))
                 except Exception as e:  # propagate exception through queue
                     result_queue.put(e)
@@ -558,11 +628,14 @@ class ProductDescriptionProcessor:
             print(f"\n{Fore.GREEN}Generated Content:{Style.RESET_ALL}")
             print(f"{Fore.YELLOW}Title:{Style.RESET_ALL} {title}")
             print(f"{Fore.YELLOW}Description:{Style.RESET_ALL} {description}")
+            self._log(f"Title: {title}")
+            self._log(f"Description: {description[:200]}...")
             
             return title, description
             
         except Exception as e:
             print(f"{Fore.RED}Error: {str(e)}{Style.RESET_ALL}")
+            self._log(f"Error: {str(e)}")
             raise 
     
     def test_csv_load(self, input_file: str) -> bool:

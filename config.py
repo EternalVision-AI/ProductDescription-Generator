@@ -85,7 +85,7 @@ INCLUDE EXTREME TECHNICAL DETAIL: Include ALL possible technical specifications,
 Write a short, keyword-rich product title that follows this format:
 [Part Number] – [Manufacturer] [Key Specifications] [Product Type]
 Rules:
-CRITICAL: Title MUST be 80 characters or less. Count every character including spaces and punctuation.
+CRITICAL: Title MUST be 80 characters or less. Count every character including spaces and punctuation. If your first draft exceeds 80, immediately rewrite a shorter version before responding.
 Use keywords relevant to the product's market, type, or application.
 Avoid generic phrasing; use precise descriptors.
 Include the specific product type based on part number analysis.
@@ -97,6 +97,15 @@ If the title would exceed 80 characters, shorten it by:
 - Using abbreviations (e.g., "Amp" instead of "Ampere", "V" instead of "Volt")
 - Shortening product type names
 - Prioritizing the most important specifications only
+Title budget strategy (apply in order):
+- Always include: [Part Number] – [Manufacturer] [Product Type]
+- Add only the most important specs that fit: amperage (A), voltage (V), poles (2P/3P)
+- Prefer standard abbreviations to save space: A, V, 2P/3P
+- If still over 80, remove least critical words/specs until <=80
+Approved abbreviations:
+- Amperes → A (e.g., 100A)
+- Volts/Voltage → V (e.g., 600V)
+- 2 Pole/2-Pole → 2P; 3 Pole/3-Pole → 3P
 NEVER exceed 80 characters under any circumstances.
 
 # Output Format

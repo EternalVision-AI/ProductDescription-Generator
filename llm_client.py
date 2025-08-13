@@ -237,69 +237,78 @@ class LLMClient:
                 content = str(content)
             # Clean up any problematic characters
             content = content.encode('utf-8', errors='replace').decode('utf-8')
-
+ 
             lines = content.split('\n')
             title = ""
             description = ""
             in_description = False
             
-            for line in lines:
+            # Helper to strip simple markdown emphasis
+            def strip_md(s: str) -> str:
+                s = s.strip()
+                # strip surrounding ** or * and trailing ** or *
+                if s.startswith('**') and s.endswith('**') and len(s) > 4:
+                    s = s[2:-2].strip()
+                if s.startswith('*') and s.endswith('*') and len(s) > 2:
+                    s = s[1:-1].strip()
+                # common broken encodings
+                s = s.replace('‚Äì', '-').replace('â€“', '-').replace('â€”', '—').replace('â€"', '-')
+                return s
+ 
+            cleaned_lines = []
+            for raw in lines:
                 try:
-                    line = line.strip()
+                    line = raw.strip()
                 except (UnicodeDecodeError, AttributeError):
                     continue
-                
-                # Skip empty lines and introductory text
-                if not line or line.startswith('Based on the inputs'):
-                    continue
-                
-                # Handle both markdown and plain text formats for title
+                if line:
+                    cleaned_lines.append(line)
+             
+            # First pass: explicit markers
+            for line in cleaned_lines:
                 if ('**Title:**' in line or 'Title:' in line) and not title:
-                    # Extract title from various formats
                     if '**Title:**' in line:
-                        title = line.split('**Title:**')[1].strip()
+                        title = strip_md(line.split('**Title:**', 1)[1])
                     elif 'Title:' in line:
-                        title = line.split('Title:')[1].strip()
-                
-                # Handle both markdown and plain text formats for description
-                elif ('**Description:**' in line or 'Description:' in line) and not description:
+                        title = strip_md(line.split('Title:', 1)[1])
+                    continue
+                if ('**Description:**' in line or 'Description:' in line):
                     in_description = True
-                    # Extract description start from various formats
+                    part = ''
                     if '**Description:**' in line:
-                        desc_part = line.split('**Description:**')[1].strip()
-                        if desc_part:
-                            description = desc_part
+                        part = strip_md(line.split('**Description:**', 1)[1])
                     elif 'Description:' in line:
-                        desc_part = line.split('Description:')[1].strip()
-                        if desc_part:
-                            description = desc_part
-                
-                # Continue description if we're in description mode
-                elif in_description and line:
-                    # Skip markdown formatting, notes, and metadata
-                    if (not line.startswith('**') and 
-                        not line.startswith('Note:') and 
-                        not line.startswith('By ') and
-                        not line.startswith('Error:') and
-                        not line.startswith('The description has been')):
-                        description += " " + line
-            
-            # Clean up the title (fix encoding issues)
-            title = title.replace('‚Äì', '–').replace('â€"', '–')
-            
-            # Remove any remaining markdown formatting
-            title = title.replace('**', '').replace('*', '')
-            description = description.replace('**', '').replace('*', '')
-            
-            # Clean up extra whitespace
-            title = title.strip()
-            description = description.strip()
-            
-            if not title or not description:
+                        part = strip_md(line.split('Description:', 1)[1])
+                    if part:
+                        description += ('' if not description else ' ') + part
+                    continue
+                if in_description:
+                    # Skip markdown headings in description
+                    if not line.startswith('**') and not line.startswith('#'):
+                        description += ('' if not description else ' ') + strip_md(line)
+             
+            # Fallback: no explicit markers → first non-empty line is title, rest is description
+            if not title:
+                if cleaned_lines:
+                    first = strip_md(cleaned_lines[0])
+                    # If the first line looks like a sentence title, use it
+                    title = first
+                    body_lines = [strip_md(l) for l in cleaned_lines[1:]]
+                    description = ' '.join(body_lines).strip()
+             
+            # Final cleanup
+            title = title.replace('**', '').replace('*', '').strip()
+            description = description.replace('**', '').replace('*', '').strip()
+             
+            if not title:
                 raise ValueError("Could not parse title or description from response")
-            
+            if not description:
+                # Build description from remaining content if empty
+                remaining = '\n'.join(lines)
+                description = remaining.strip() or f"Technical details for {title}."
+             
             return title, description
-            
+             
         except Exception as e:
             logger.error(f"Error parsing response: {str(e)}")
             logger.error(f"Raw content: {content}")
