@@ -26,7 +26,7 @@ class ProductDescriptionProcessor:
         self.llm_client = LLMClient(config)
         # Initialize specs lookup (optional if file missing)
         try:
-            self.specs_lookup = SpecsLookup(self.config.SPECS_CSV_PATH)
+            self.specs_lookup = SpecsLookup(self.config.SPECS_CSV_PATH, self.llm_client)
             if self.specs_lookup.has_data():
                 print(f"{Fore.GREEN}✅ Loaded specs from: {self.config.SPECS_CSV_PATH}{Style.RESET_ALL}")
             else:
@@ -158,33 +158,27 @@ class ProductDescriptionProcessor:
             raise
         
         # Validate CSV structure
-        # required_columns = ['Part Number', 'Manufacturer']
-        required_columns = ['Part Number']
-        missing_columns = [col for col in required_columns if col not in df.columns]
-        if missing_columns:
-            print(f"{Fore.RED}Missing required columns: {missing_columns}{Style.RESET_ALL}")
-            raise ValueError(f"CSV must contain columns: {required_columns}")
-        
-        # Check if manufacturer column exists, if not create a default one
-        if 'Manufacturer' not in df.columns:
-            print(f"{Fore.YELLOW}No Manufacturer column found, using default manufacturer{Style.RESET_ALL}")
-            df['Manufacturer'] = 'Unknown Manufacturer'
-        else:
-            # Manufacturer column exists, check if it has data
+        # Dynamic: do not hard-require fixed column names here; rely on LLM mapping later
+        if 'Manufacturer' in df.columns:
             non_empty_manufacturers = df['Manufacturer'].dropna()
             if len(non_empty_manufacturers) > 0:
                 print(f"{Fore.GREEN}Found {len(non_empty_manufacturers)} products with manufacturer info{Style.RESET_ALL}")
                 print(f"{Fore.CYAN}Sample manufacturers: {list(non_empty_manufacturers.unique())[:5]}{Style.RESET_ALL}")
-            else:
-                print(f"{Fore.YELLOW}Manufacturer column exists but is empty, using default manufacturer{Style.RESET_ALL}")
-                df['Manufacturer'] = 'Unknown Manufacturer'
-        
+ 
         # Debug: Show column names and first few rows
         print(f"{Fore.CYAN}Available columns: {list(df.columns)}{Style.RESET_ALL}")
         print(f"{Fore.CYAN}First row sample: {dict(df.iloc[0]) if len(df) > 0 else 'No data'}{Style.RESET_ALL}")
         
         # Analyze CSV structure for potential manufacturer columns
         self._analyze_csv_structure(df)
+        
+        # Use LLM to dynamically determine column mapping and relevant specs
+        if self._is_specs_available():
+            self._determine_column_mapping_with_llm(df)
+        
+        # If we still don't know the part number column and 'Part Number' is absent, fail fast
+        if ((not hasattr(self, 'column_mapping')) or (not self.column_mapping) or (not self.column_mapping.get('part_number_column'))) and ('Part Number' not in df.columns):
+            raise ValueError("Unable to determine Part Number column dynamically. Ensure the first rows include a part number-like column.")
         
         # Test LLM connection
         print(f"{Fore.CYAN}Testing LLM connection...{Style.RESET_ALL}")
@@ -217,9 +211,17 @@ class ProductDescriptionProcessor:
             df: DataFrame containing product data
             output_file: Path to output CSV file
         """
-        # Filter out rows with missing data
-        # valid_df = df.dropna(subset=['Part Number', 'Manufacturer'])
-        valid_df = df.dropna(subset=['Part Number'])
+        # Determine part number column dynamically
+        part_col = None
+        if hasattr(self, 'column_mapping') and self.column_mapping:
+            part_col = self.column_mapping.get('part_number_column')
+        if not part_col and 'Part Number' in df.columns:
+            part_col = 'Part Number'
+        
+        # Filter out rows missing part number if we identified the column
+        valid_df = df.copy()
+        if part_col and part_col in df.columns:
+            valid_df = df[df[part_col].astype(str).str.strip() != '']
         skipped_count = len(df) - len(valid_df)
         if skipped_count > 0:
             print(f"{Fore.YELLOW}Skipped {skipped_count} rows with missing data{Style.RESET_ALL}")
@@ -232,13 +234,7 @@ class ProductDescriptionProcessor:
             import csv
             writer = csv.writer(csvfile)
             writer.writerow(output_columns)
-        
-        # Ensure we have the required columns
-        if 'Part Number' not in valid_df.columns:
-            raise ValueError("Part Number column is missing from valid data")
-        if 'Manufacturer' not in valid_df.columns:
-            raise ValueError("Manufacturer column is missing from valid data")
-        
+ 
         # Process in batches
         for i in tqdm(range(0, len(valid_df), self.config.BATCH_SIZE), 
                      desc="Processing batches"):
@@ -261,17 +257,37 @@ class ProductDescriptionProcessor:
         """
         for _, row in batch_df.iterrows():
             try:
-                part_number = str(row['Part Number']).strip()
+                # Use dynamic column mapping if available
+                if hasattr(self, 'column_mapping') and self.column_mapping:
+                    part_number_col = self.column_mapping.get('part_number_column', 'Part Number')
+                    manufacturer_col = self.column_mapping.get('manufacturer_column', 'Manufacturer')
+                else:
+                    part_number_col = 'Part Number'
+                    manufacturer_col = 'Manufacturer'
+                
+                # Resolve part number robustly
+                part_number = ''
+                if part_number_col in row and pd.notna(row[part_number_col]):
+                    part_number = str(row[part_number_col]).strip()
+                elif 'Part Number' in row and pd.notna(row['Part Number']):
+                    part_number = str(row['Part Number']).strip()
+                else:
+                    # Try any column that looks like a PN
+                    for col in row.index:
+                        val = str(row[col]).strip()
+                        if val and any(c.isalpha() for c in val) and any(c.isdigit() for c in val):
+                            part_number = val
+                            break
                 if not part_number:
                     print(f"{Fore.YELLOW}Skipping row with empty part number{Style.RESET_ALL}")
                     # Write row with error message
                     self._write_row_to_csv(row, "SKIPPED", "Empty part number", output_file)
                     continue
                 
-                # Get manufacturer from various possible columns
+                # Get manufacturer from detected column
                 manufacturer = 'Unknown Manufacturer'
-                if 'Manufacturer' in row and pd.notna(row['Manufacturer']):
-                    manufacturer = str(row['Manufacturer']).strip()
+                if manufacturer_col in row and pd.notna(row[manufacturer_col]):
+                    manufacturer = str(row[manufacturer_col]).strip()
                     if not manufacturer:
                         manufacturer = 'Unknown Manufacturer'
                 else:
@@ -281,16 +297,29 @@ class ProductDescriptionProcessor:
                     print(f"{Fore.YELLOW}Warning: No manufacturer found for {part_number}, using default{Style.RESET_ALL}")
                 else:
                     print(f"{Fore.CYAN}Using manufacturer: {manufacturer} for {part_number}{Style.RESET_ALL}")
-                
-                reliable_specs = None
+                 
+                # Prefer specs from the dedicated specs CSV (dynamic via LLM) if available
+                reliable_specs: Dict[str, str] = {}
                 if self._is_specs_available():
-                    reliable_specs = self.specs_lookup.get_specs(part_number)
-                    if reliable_specs:
-                        print(f"{Fore.CYAN}Found specs for {part_number}: {len(reliable_specs)} fields{Style.RESET_ALL}")
-                    else:
-                        print(f"{Fore.YELLOW}No specs found for {part_number}{Style.RESET_ALL}")
-                else:
-                    print(f"{Fore.YELLOW}Specs lookup not available for {part_number}{Style.RESET_ALL}")
+                    csv_specs = self.specs_lookup.get_specs(part_number)
+                    if csv_specs:
+                        reliable_specs.update(csv_specs)
+                        print(f"{Fore.CYAN}Found specs in specs CSV for {part_number}: {len(csv_specs)} fields{Style.RESET_ALL}")
+ 
+                # Always merge ALL non-empty input row columns as specs (user requirement)
+                row_specs: Dict[str, str] = {}
+                for col in row.index:
+                    try:
+                        val = row[col]
+                        if pd.notna(val):
+                            sval = str(val).strip()
+                            if sval and not col.startswith('Unnamed:') and col not in ('WEB TITLE', 'WEB DESCRIPTION'):
+                                row_specs[col] = sval
+                    except Exception:
+                        continue
+                if row_specs:
+                    reliable_specs.update(row_specs)
+                    print(f"{Fore.CYAN}Merged {len(row_specs)} input columns for {part_number}{Style.RESET_ALL}")
  
                 title, description = self.llm_client.generate_content(
                     part_number,
@@ -301,7 +330,7 @@ class ProductDescriptionProcessor:
                 # Write result directly to CSV
                 self._write_row_to_csv(row, title, description, output_file)
                 self.stats['processed'] += 1
-                
+                 
                 # Print progress for first few items
                 if self.stats['processed'] <= 5:
                     print(f"{Fore.GREEN}✓ Generated: {part_number} - {manufacturer}{Style.RESET_ALL}")
@@ -312,7 +341,7 @@ class ProductDescriptionProcessor:
                 # Write error row to CSV
                 self._write_row_to_csv(row, "ERROR", f"Failed to generate: {str(e)}", output_file)
                 self.stats['failed'] += 1
-                
+                 
                 print(f"{Fore.RED}✗ Failed: {part_num}{Style.RESET_ALL}")
          
     def _write_row_to_csv(self, row: pd.Series, title: str, description: str, output_file: str):
@@ -327,6 +356,141 @@ class ProductDescriptionProcessor:
         except Exception as e:
             print(f"{Fore.RED}Error writing to CSV: {str(e)}{Style.RESET_ALL}")
             logger.error(f"Failed to write row to CSV: {str(e)}")
+    
+    def _determine_column_mapping_with_llm(self, df: pd.DataFrame):
+        """Use LLM to dynamically determine column mapping and relevant specs from CSV structure"""
+        try:
+            print(f"{Fore.CYAN}Using LLM to analyze input CSV structure and determine column mapping...{Style.RESET_ALL}")
+            
+            # Get first few rows as sample data
+            sample_data = df.head(3).to_dict('records')
+            columns_info = {
+                'columns': list(df.columns),
+                'sample_data': sample_data,
+                'total_rows': len(df)
+            }
+            
+            # Create prompt for LLM to analyze CSV structure
+            analysis_prompt = f"""
+            Analyze this CSV structure and determine the column mapping for product specifications.
+            
+            CSV Columns: {columns_info['columns']}
+            Sample Data (first 3 rows): {columns_info['sample_data']}
+            Total Rows: {columns_info['total_rows']}
+            
+            Please identify:
+            1. Part Number column (the unique identifier for each product)
+            2. Manufacturer column (the company that makes the product)
+            3. All other columns
+            
+            Return your analysis in this exact JSON format:
+            {{
+                "part_number_column": "exact_column_name",
+                "manufacturer_column": "exact_column_name", 
+                "relevant_spec_columns": ["column1", "column2", "column3", ...],
+                "reasoning": "brief explanation of your choices"
+            }}
+            
+            """
+            
+            # Get LLM analysis
+            analysis_result = self.llm_client._analyze_csv_structure(analysis_prompt)
+            
+            if analysis_result:
+                # Store the column mapping for use in processing
+                self.column_mapping = analysis_result
+                print(f"{Fore.GREEN}✅ LLM Column Analysis:{Style.RESET_ALL}")
+                print(f"  Part Number: {analysis_result.get('part_number_column', 'Not found')}")
+                print(f"  Manufacturer: {analysis_result.get('manufacturer_column', 'Not found')}")
+                print(f"  Relevant Specs: {analysis_result.get('relevant_spec_columns', [])}")
+                print(f"  Reasoning: {analysis_result.get('reasoning', 'No reasoning provided')}")
+            else:
+                print(f"{Fore.YELLOW}⚠️ LLM analysis failed, using default column detection{Style.RESET_ALL}")
+                self.column_mapping = None
+                
+        except Exception as e:
+            print(f"{Fore.YELLOW}⚠️ Error in LLM column analysis: {str(e)}{Style.RESET_ALL}")
+            self.column_mapping = None
+    
+    def _determine_input_csv_mapping_with_llm(self, df: pd.DataFrame):
+        """Use LLM to determine column mapping for input CSV when no specs file is available"""
+        try:
+            print(f"{Fore.CYAN}Using LLM to analyze input CSV structure...{Style.RESET_ALL}")
+            
+            # Get first few rows as sample data
+            sample_data = df.head(3).to_dict('records')
+            columns_info = {
+                'columns': list(df.columns),
+                'sample_data': sample_data,
+                'total_rows': len(df)
+            }
+            
+            # Create prompt for LLM to analyze input CSV structure
+            analysis_prompt = f"""
+            Analyze this input CSV structure and determine the column mapping for product processing.
+            
+            CSV Columns: {columns_info['columns']}
+            Sample Data (first 3 rows): {columns_info['sample_data']}
+            Total Rows: {columns_info['total_rows']}
+            
+            Please identify:
+            1. Part Number column (the unique identifier for each product)
+            2. Manufacturer column (the company that makes the product)
+            3. All other columns 
+            
+            Return your analysis in this exact JSON format:
+            {{
+                "part_number_column": "exact_column_name",
+                "manufacturer_column": "exact_column_name", 
+                "additional_spec_columns": ["column1", "column2", "column3", ...],
+                "reasoning": "brief explanation of your choices"
+            }}
+            """
+            
+            # Get LLM analysis
+            analysis_result = self.llm_client._analyze_csv_structure(analysis_prompt)
+            
+            if analysis_result:
+                # Store the column mapping for use in processing
+                self.column_mapping = analysis_result
+                print(f"{Fore.GREEN}✅ LLM Input CSV Analysis:{Style.RESET_ALL}")
+                print(f"  Part Number: {analysis_result.get('part_number_column', 'Not found')}")
+                print(f"  Manufacturer: {analysis_result.get('manufacturer_column', 'Not found')}")
+                print(f"  Additional Specs: {analysis_result.get('additional_spec_columns', [])}")
+                print(f"  Reasoning: {analysis_result.get('reasoning', 'No reasoning provided')}")
+            else:
+                print(f"{Fore.YELLOW}⚠️ LLM analysis failed, using default column detection{Style.RESET_ALL}")
+                self.column_mapping = None
+                
+        except Exception as e:
+            print(f"{Fore.YELLOW}⚠️ Error in LLM input CSV analysis: {str(e)}{Style.RESET_ALL}")
+            self.column_mapping = None
+    
+    def _get_dynamic_specs(self, row: pd.Series, part_number: str) -> Dict[str, str]:
+        """Get relevant specs dynamically using LLM analysis"""
+        if not hasattr(self, 'column_mapping') or not self.column_mapping:
+            return None
+        
+        try:
+            # Get relevant spec columns from LLM analysis
+            relevant_columns = (
+                self.column_mapping.get('relevant_spec_columns', []) + 
+                self.column_mapping.get('additional_spec_columns', [])
+            )
+            
+            # Extract specs from the row as a dict
+            specs: Dict[str, str] = {}
+            for col in relevant_columns:
+                if col in row.index and pd.notna(row[col]) and str(row[col]).strip():
+                    value = str(row[col]).strip()
+                    if value and value.upper() not in {"N / A", "N/A", "NA", ""}:
+                        specs[col] = value
+            
+            return specs if specs else None
+            
+        except Exception as e:
+            print(f"{Fore.YELLOW}⚠️ Error getting dynamic specs: {str(e)}{Style.RESET_ALL}")
+            return None
     
     def _print_summary(self, output_file: str):
         """Print processing summary"""

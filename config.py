@@ -28,7 +28,7 @@ class Config:
     LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
 
     # Key Specs Data Configuration
-    SPECS_CSV_PATH = os.getenv('SPECS_CSV_PATH', 'HPS_V1.csv')
+    SPECS_CSV_PATH = os.getenv('SPECS_CSV_PATH', 'specifications.csv')
 
     # Prompt Configuration
     PROMPT_TEMPLATE = """
@@ -39,7 +39,7 @@ You're an expert website content manager. You create the best products and descr
 Part Number: {part_number}
 Manufacturer: {manufacturer}
 
-# Reliable Manufacturer Specs (verbatim fields):
+# Dynamic Product Specifications (if available):
 {reliable_specs}
 
 # CRITICAL: Detailed, Differentiated Output Rules
@@ -62,6 +62,7 @@ Manufacturer: {manufacturer}
 17. DO NOT ASSUME: Only include technical specifications and numbers that can be reasonably inferred from the part number or are typical for the product type. Do not invent or assume specifications that are not suggested by the part number. If a specification cannot be inferred, state "specifications not indicated in part number" rather than making assumptions.
 18. PATTERN ANALYSIS: Analyze part number patterns for each manufacturer to understand their coding systems. Different manufacturers use different patterns for indicating amperage, voltage, poles, and other specifications. Study the part number structure carefully before making any inferences.
 19. MANUFACTURER-SPECIFIC INTERPRETATION: Each manufacturer has unique part number coding systems. Analyze the specific patterns used by the manufacturer to accurately interpret specifications rather than making generic assumptions.
+20. DYNAMIC SPECS INTEGRATION: If dynamic specifications are provided, integrate them naturally into the description. Use the provided technical data to enhance accuracy and detail while maintaining the technical tone and comprehensive coverage.
 
 # Deliverables
 Produce two sections:

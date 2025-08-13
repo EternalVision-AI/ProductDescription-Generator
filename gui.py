@@ -107,7 +107,7 @@ class ProductGeneratorGUI:
         specs_frame = ctk.CTkFrame(left_col)
         specs_frame.pack(fill="x", padx=20, pady=10)
 
-        ctk.CTkLabel(specs_frame, text="Key Specs (optional):", font=ctk.CTkFont(size=14)).pack(anchor="w", padx=10, pady=(10, 5))
+        ctk.CTkLabel(specs_frame, text="Specifications CSV (optional):", font=ctk.CTkFont(size=14)).pack(anchor="w", padx=10, pady=(10, 5))
 
         specs_input_row = ctk.CTkFrame(specs_frame)
         specs_input_row.pack(fill="x", padx=10, pady=(0, 6))
@@ -125,7 +125,7 @@ class ProductGeneratorGUI:
         ).pack(side="right")
 
         self.use_specs_var = ctk.BooleanVar(value=True)
-        ctk.CTkCheckBox(specs_frame, text="Use key specs when available", variable=self.use_specs_var).pack(anchor="w", padx=10, pady=(0, 10))
+        ctk.CTkCheckBox(specs_frame, text="Use specifications CSV for enhanced descriptions", variable=self.use_specs_var).pack(anchor="w", padx=10, pady=(0, 10))
         
         # Test section
         test_frame = ctk.CTkFrame(left_col)
@@ -189,13 +189,6 @@ class ProductGeneratorGUI:
         
         ctk.CTkButton(
             button_frame, 
-            text="Test Specs", 
-            command=self.test_specs_lookup,
-            height=40
-        ).pack(side="left", padx=10, pady=10)
-        
-        ctk.CTkButton(
-            button_frame, 
             text="Clear Log", 
             command=self.clear_log,
             height=40
@@ -253,7 +246,7 @@ class ProductGeneratorGUI:
     def browse_specs_file(self):
         """Browse for Key Specs CSV file"""
         filename = filedialog.askopenfilename(
-            title="Select Key Specs CSV",
+            title="Select Specifications CSV",
             filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
         )
         if filename:
@@ -365,9 +358,9 @@ class ProductGeneratorGUI:
                 if self.processor.specs_lookup and self.processor.specs_lookup.has_data():
                     specs = self.processor.specs_lookup.get_specs(part_number)
                     if specs:
-                        self.enqueue_message("ℹ️ Key specs found; using reliable specs for generation")
+                        self.enqueue_message("ℹ️ Specifications found; using enhanced specs for generation")
                     else:
-                        self.enqueue_message("ℹ️ No key specs found for this part; falling back to inference")
+                        self.enqueue_message("ℹ️ No specifications found for this part; using LLM analysis")
 
                 title, description = self.processor.process_single_product(part_number, manufacturer)
                 
@@ -455,31 +448,6 @@ class ProductGeneratorGUI:
             except Exception as e:
                 self.enqueue_message(f"❌ CSV test error: {str(e)}")
                 self.set_status("CSV test error")
-        
-        threading.Thread(target=test_thread, daemon=True).start()
-    
-    def test_specs_lookup(self):
-        """Test the specs lookup functionality"""
-        def test_thread():
-            self.status_var.set("Testing specs lookup...")
-            self.enqueue_message(f"🧪 Testing specs lookup...")
-            
-            try:
-                # Create processor for testing
-                self.config.SPECS_CSV_PATH = self.specs_path_var.get().strip() or self.config.SPECS_CSV_PATH
-                self.processor = ProductDescriptionProcessor(self.config)
-                
-                # Test specs lookup
-                if self.processor.test_specs_lookup():
-                    self.enqueue_message("✅ Specs lookup test passed!")
-                    self.set_status("Specs test passed")
-                else:
-                    self.enqueue_message("❌ Specs lookup test failed!")
-                    self.set_status("Specs test failed")
-                    
-            except Exception as e:
-                self.enqueue_message(f"❌ Specs test error: {str(e)}")
-                self.set_status("Specs test error")
         
         threading.Thread(target=test_thread, daemon=True).start()
     

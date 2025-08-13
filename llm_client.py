@@ -6,6 +6,7 @@ import requests
 import ollama
 from retry import retry
 from config import Config
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +123,103 @@ class LLMClient:
             fallback_desc = f"Technical specifications and product details for {part_number} manufactured by {manufacturer}. Product information and specifications available upon request."
             logger.warning(f"Using fallback content for {part_number} due to error")
             return fallback_title, fallback_desc
+    
+    def _analyze_csv_structure(self, analysis_prompt: str) -> Optional[Dict]:
+        """Use LLM to analyze CSV structure and determine column mapping"""
+        try:
+            # Use a simpler prompt for structure analysis
+            response = ollama.chat(
+                model=self.config.OLLAMA_MODEL,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": analysis_prompt
+                    }
+                ],
+                options={
+                    "temperature": 0.1,  # Low temperature for consistent analysis
+                    "top_p": 0.9,
+                    "repeat_penalty": 1.1,
+                    "seed": self.config.SEED
+                }
+            )
+            
+            # Extract JSON from response
+            content = response['message']['content']
+            
+            # Try to extract JSON from the response
+            import json
+            import re
+            
+            # Look for JSON in the response
+            json_match = re.search(r'\{.*\}', content, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(0)
+                try:
+                    result = json.loads(json_str)
+                    return result
+                except json.JSONDecodeError:
+                    pass
+            
+            # If JSON extraction failed, try to parse manually
+            return self._parse_analysis_response(content)
+            
+        except Exception as e:
+            logger.error(f"Error in CSV structure analysis: {str(e)}")
+            return None
+    
+    def _format_specifications(self, specs_prompt: str) -> Optional[str]:
+        """Use LLM to format specifications for product descriptions"""
+        try:
+            response = ollama.chat(
+                model=self.config.OLLAMA_MODEL,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": specs_prompt
+                    }
+                ],
+                options={
+                    "temperature": 0.3,
+                    "top_p": 0.9,
+                    "repeat_penalty": 1.1,
+                    "seed": self.config.SEED
+                }
+            )
+            
+            content = response['message']['content']
+            return content.strip()
+            
+        except Exception as e:
+            logger.error(f"Error formatting specifications: {str(e)}")
+            return None
+    
+    def _parse_analysis_response(self, content: str) -> Optional[Dict]:
+        """Parse LLM response to extract column mapping information"""
+        try:
+            # Simple parsing for common patterns
+            result = {}
+            
+            # Look for part number column
+            part_match = re.search(r'part.*number.*column.*["\']([^"\']+)["\']', content, re.IGNORECASE)
+            if part_match:
+                result['part_number_column'] = part_match.group(1)
+            
+            # Look for manufacturer column
+            mfr_match = re.search(r'manufacturer.*column.*["\']([^"\']+)["\']', content, re.IGNORECASE)
+            if mfr_match:
+                result['manufacturer_column'] = mfr_match.group(1)
+            
+            # Look for relevant spec columns
+            spec_matches = re.findall(r'["\']([^"\']+)["\']', content)
+            if spec_matches:
+                result['relevant_spec_columns'] = spec_matches[:10]  # Limit to first 10
+            
+            return result if result else None
+            
+        except Exception as e:
+            logger.error(f"Error parsing analysis response: {str(e)}")
+            return None
     
     def _parse_response(self, content: str) -> Tuple[str, str]:
         """
