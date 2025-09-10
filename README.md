@@ -25,7 +25,30 @@ An automated Python application for generating SEO-friendly titles and technical
 
 ## Installation
 
-### 1. Clone or Download the Project
+### Quick Setup (macOS)
+
+For macOS users, we provide an automated setup script that installs everything you need:
+
+```bash
+# Make the setup script executable
+chmod +x setup_mac.sh
+
+# Run the automated setup
+./setup_mac.sh
+```
+
+This will automatically install:
+- Python 3.11
+- All required dependencies
+- Ollama AI service
+- Llama3.1:8b model
+- Create launcher scripts and desktop shortcuts
+
+For detailed macOS setup instructions, see [SETUP_MAC.md](SETUP_MAC.md).
+
+### Manual Installation
+
+#### 1. Clone or Download the Project
 
 ```bash
 # If you have git installed
@@ -35,17 +58,17 @@ cd auto-generator
 # Or download and extract the ZIP file
 ```
 
-### 2. Install Python Dependencies
+#### 2. Install Python Dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 3. Install Ollama
+#### 3. Install Ollama
 
 Visit [https://ollama.ai/](https://ollama.ai/) and download the appropriate version for your operating system.
 
-### 4. Setup Ollama and Models
+#### 4. Setup Ollama and Models
 
 ```bash
 python main.py setup
@@ -282,6 +305,12 @@ auto-generator/
 ├── run_gui.bat           # Windows GUI launcher
 ├── run_cli.bat           # Windows CLI launcher
 ├── install.bat           # Windows installation script
+├── setup_mac.sh          # macOS automated setup script
+├── test_setup.sh         # macOS setup verification script
+├── verify_installation.sh # Installation verification script
+├── run_gui.sh            # macOS GUI launcher (created by setup)
+├── Product Description Generator.app/ # macOS desktop shortcut (created by setup)
+├── SETUP_MAC.md          # macOS setup documentation
 ├── .env.example          # Environment variables example
 ├── output/               # Generated output files
 └── product_generator.log # Application logs

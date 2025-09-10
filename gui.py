@@ -396,6 +396,13 @@ class ProductGeneratorGUI:
             self.enqueue_message(f"🚀 Starting processing of {input_file}")
             
             try:
+                # Ensure output directory exists with proper permissions
+                self.enqueue_message("🔧 Ensuring output directory permissions...")
+                if not self.config.ensure_output_dir():
+                    self.enqueue_message("❌ Failed to create output directory with proper permissions")
+                    self.set_status("Setup failed - Output directory issue")
+                    return
+                
                 # Recreate processor so it picks up current HPS settings
                 self.config.SPECS_CSV_PATH = self.specs_path_var.get().strip() or self.config.SPECS_CSV_PATH
                 self.processor = ProductDescriptionProcessor(self.config)

@@ -45,8 +45,54 @@ class ProductDescriptionProcessor:
         self.log_callback = None
         self.progress_callback = None
         
-        # Create output directory if it doesn't exist
-        os.makedirs(self.config.OUTPUT_DIR, exist_ok=True)
+        # Create output directory if it doesn't exist with proper permissions
+        self._ensure_output_directory()
+
+    def _ensure_output_directory(self):
+        """Ensure output directory exists with proper permissions (Mac-compatible)"""
+        try:
+            output_dir = self.config.OUTPUT_DIR
+            
+            # Remove existing directory if it has permission issues
+            if os.path.exists(output_dir):
+                try:
+                    # Test write permissions
+                    test_file = os.path.join(output_dir, f"test_write_{os.getpid()}.tmp")
+                    with open(test_file, 'w') as f:
+                        f.write("test")
+                    os.remove(test_file)
+                    print(f"{Fore.GREEN}✅ Output directory permissions OK{Style.RESET_ALL}")
+                    return
+                except (PermissionError, OSError):
+                    print(f"{Fore.YELLOW}⚠️ Output directory has permission issues, recreating...{Style.RESET_ALL}")
+                    import shutil
+                    shutil.rmtree(output_dir, ignore_errors=True)
+            
+            # Create directory with proper permissions
+            os.makedirs(output_dir, mode=0o755, exist_ok=True)
+            
+            # Set proper permissions (Mac-specific)
+            try:
+                import stat
+                os.chmod(output_dir, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
+            except Exception:
+                pass
+            
+            # Test write permissions
+            test_file = os.path.join(output_dir, f"test_write_{os.getpid()}.tmp")
+            try:
+                with open(test_file, 'w') as f:
+                    f.write("test")
+                os.remove(test_file)
+                print(f"{Fore.GREEN}✅ Output directory created with proper permissions{Style.RESET_ALL}")
+            except Exception as e:
+                print(f"{Fore.RED}❌ Cannot write to output directory: {str(e)}{Style.RESET_ALL}")
+                print(f"{Fore.YELLOW}💡 Try running: chmod 755 {output_dir}{Style.RESET_ALL}")
+                raise
+                
+        except Exception as e:
+            print(f"{Fore.RED}❌ Failed to create output directory: {str(e)}{Style.RESET_ALL}")
+            raise
 
     def _log(self, message: str):
         try:
@@ -206,6 +252,9 @@ class ProductDescriptionProcessor:
             raise ConnectionError("LLM service not available")
         print(f"{Fore.GREEN}LLM connection successful!{Style.RESET_ALL}")
         
+        # Ensure output directory exists with proper permissions
+        self._ensure_output_directory()
+        
         # Generate output filename
         if not output_file:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -248,12 +297,35 @@ class ProductDescriptionProcessor:
         print(f"{Fore.CYAN}Processing {len(valid_df)} products...{Style.RESET_ALL}")
         self._log(f"Processing {len(valid_df)} products...")
         
-        # Create output CSV file with headers
+        # Create output CSV file with headers (with Mac permission handling)
         output_columns = list(valid_df.columns) + ['WEB TITLE', 'WEB DESCRIPTION']
-        with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
-            import csv
-            writer = csv.writer(csvfile)
-            writer.writerow(output_columns)
+        
+        # Ensure output directory exists before creating file
+        output_dir = os.path.dirname(output_file)
+        if output_dir and not os.path.exists(output_dir):
+            self._ensure_output_directory()
+        
+        try:
+            with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
+                import csv
+                writer = csv.writer(csvfile)
+                writer.writerow(output_columns)
+        except PermissionError as e:
+            print(f"{Fore.RED}Permission denied creating CSV file: {str(e)}{Style.RESET_ALL}")
+            print(f"{Fore.YELLOW}💡 Trying to fix permissions...{Style.RESET_ALL}")
+            
+            # Try to fix permissions and retry
+            try:
+                import stat
+                os.chmod(output_dir, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
+                with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
+                    import csv
+                    writer = csv.writer(csvfile)
+                    writer.writerow(output_columns)
+                print(f"{Fore.GREEN}✅ Permission fixed, file created successfully{Style.RESET_ALL}")
+            except Exception as retry_e:
+                print(f"{Fore.RED}❌ Still cannot create file after permission fix: {str(retry_e)}{Style.RESET_ALL}")
+                raise
         
         # Process in batches
         total_count = len(valid_df)
@@ -385,17 +457,43 @@ class ProductDescriptionProcessor:
         return processed_rows
     
     def _write_row_to_csv(self, row: pd.Series, title: str, description: str, output_file: str):
-        """Write a single row with generated content to CSV file"""
+        """Write a single row with generated content to CSV file with Mac permission handling"""
         try:
             import csv
-            with open(output_file, 'a', newline='', encoding='utf-8') as csvfile:
-                writer = csv.writer(csvfile)
-                # Write original row data plus generated content
-                row_data = list(row.values) + [title, description]
-                writer.writerow(row_data)
+            
+            # Ensure output directory exists before writing
+            output_dir = os.path.dirname(output_file)
+            if output_dir and not os.path.exists(output_dir):
+                self._ensure_output_directory()
+            
+            # Try to write with proper error handling
+            try:
+                with open(output_file, 'a', newline='', encoding='utf-8') as csvfile:
+                    writer = csv.writer(csvfile)
+                    # Write original row data plus generated content
+                    row_data = list(row.values) + [title, description]
+                    writer.writerow(row_data)
+            except PermissionError as e:
+                print(f"{Fore.RED}Permission denied writing to CSV: {str(e)}{Style.RESET_ALL}")
+                print(f"{Fore.YELLOW}💡 Trying to fix permissions...{Style.RESET_ALL}")
+                
+                # Try to fix permissions and retry
+                try:
+                    import stat
+                    os.chmod(output_dir, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
+                    with open(output_file, 'a', newline='', encoding='utf-8') as csvfile:
+                        writer = csv.writer(csvfile)
+                        row_data = list(row.values) + [title, description]
+                        writer.writerow(row_data)
+                    print(f"{Fore.GREEN}✅ Permission fixed, write successful{Style.RESET_ALL}")
+                except Exception as retry_e:
+                    print(f"{Fore.RED}❌ Still cannot write after permission fix: {str(retry_e)}{Style.RESET_ALL}")
+                    raise
+                    
         except Exception as e:
             print(f"{Fore.RED}Error writing to CSV: {str(e)}{Style.RESET_ALL}")
             logger.error(f"Failed to write row to CSV: {str(e)}")
+            # Don't re-raise to avoid stopping the entire process
 
     def _limit_title_length(self, title: str, max_len: int) -> str:
         if not title:

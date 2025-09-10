@@ -26,6 +26,46 @@ class Config:
     # Output Configuration
     OUTPUT_DIR = os.getenv('OUTPUT_DIR', 'output')
     LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
+    
+    @classmethod
+    def ensure_output_dir(cls):
+        """Ensure output directory exists with proper permissions (Mac-compatible)"""
+        try:
+            output_dir = cls.OUTPUT_DIR
+            
+            # Remove existing directory if it has permission issues
+            if os.path.exists(output_dir):
+                try:
+                    # Test write permissions
+                    test_file = os.path.join(output_dir, f"test_write_{os.getpid()}.tmp")
+                    with open(test_file, 'w') as f:
+                        f.write("test")
+                    os.remove(test_file)
+                    return True
+                except (PermissionError, OSError):
+                    import shutil
+                    shutil.rmtree(output_dir, ignore_errors=True)
+            
+            # Create directory with proper permissions
+            os.makedirs(output_dir, mode=0o755, exist_ok=True)
+            
+            # Set proper permissions (Mac-specific)
+            try:
+                import stat
+                os.chmod(output_dir, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
+            except Exception:
+                pass
+            
+            # Test write permissions
+            test_file = os.path.join(output_dir, f"test_write_{os.getpid()}.tmp")
+            with open(test_file, 'w') as f:
+                f.write("test")
+            os.remove(test_file)
+            return True
+                
+        except Exception as e:
+            print(f"❌ Failed to create output directory: {str(e)}")
+            return False
 
     # Key Specs Data Configuration
     SPECS_CSV_PATH = os.getenv('SPECS_CSV_PATH', 'specifications.csv')
