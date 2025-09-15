@@ -4,7 +4,7 @@ An automated Python application for generating SEO-friendly titles and technical
 
 ## Features
 
-- 🚀 **Local Processing**: Uses Ollama with Llama3.1:8b model for cost-effective processing
+- 🚀 **Local Processing**: Uses Ollama with gemma2:2b model for cost-effective processing
 - 🎨 **Modern GUI**: Beautiful interface built with customtkinter with real-time progress tracking
 - 📊 **Batch Processing**: Handles large CSV files with memory-efficient streaming output
 - 🔄 **Dynamic Specs Integration**: Automatically detects and uses product specifications from CSV files
@@ -20,7 +20,7 @@ An automated Python application for generating SEO-friendly titles and technical
 
 - Python 3.8+
 - Ollama (for local processing)
-- 8GB+ RAM (for Llama3.1:8b model)
+- 8GB+ RAM (for gemma2:2b model)
 - macOS, Windows, or Linux
 
 ## Installation
@@ -41,7 +41,7 @@ This will automatically install:
 - Python 3.11
 - All required dependencies
 - Ollama AI service
-- Llama3.1:8b model
+- gemma2:2b model
 - Create launcher scripts and desktop shortcuts
 
 For detailed macOS setup instructions, see [SETUP_MAC.md](SETUP_MAC.md).
@@ -76,7 +76,7 @@ python main.py setup
 
 This will:
 - Check if Ollama is installed
-- Download the Llama3.1:8b model
+- Download the gemma2:2b model
 - Verify the setup
 
 ## Usage
@@ -158,7 +158,7 @@ Create a `.env` file to customize settings:
 
 ```env
 # Ollama Configuration
-OLLAMA_MODEL=llama3.1:8b
+OLLAMA_MODEL=gemma2:2b
 
 # Processing Configuration
 BATCH_SIZE=10
@@ -220,7 +220,7 @@ The system uses AI to automatically identify:
 ## Performance
 
 - **Processing Speed**: ~10-20 products per minute (depending on hardware)
-- **Memory Usage**: ~32GB RAM for Llama3.1:8b model
+- **Memory Usage**: ~32GB RAM for gemma2:2b model
 - **Batch Size**: Configurable (default: 10 products per batch)
 - **Memory Efficiency**: Streaming processing handles unlimited file sizes
 
@@ -240,7 +240,7 @@ ollama list
 
 ```bash
 # Pull the required model
-ollama pull llama3.1:8b
+ollama pull gemma2:2b
 ```
 
 ### Memory Issues

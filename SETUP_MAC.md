@@ -34,7 +34,7 @@ The setup script automatically installs:
   - `colorama` - Colored terminal output
   - `Pillow` - Image processing
 - **Ollama** - AI service for running local language models
-- **Llama3.1:8b Model** - The AI model used for generating descriptions
+- **gemma2:2b Model** - The AI model used for generating descriptions
 
 ## System Requirements
 
@@ -52,7 +52,7 @@ The setup script performs these steps automatically:
 3. **Python Installation** - Installs Python 3.11 via Homebrew
 4. **Dependencies Installation** - Installs all required Python packages
 5. **Ollama Installation** - Downloads and installs Ollama from the official source
-6. **AI Model Setup** - Downloads the Llama3.1:8b model (~4.7GB)
+6. **AI Model Setup** - Downloads the gemma2:2b model (~4.7GB)
 7. **Launcher Creation** - Creates convenient launcher scripts
 8. **Desktop Shortcut** - Creates a desktop application shortcut
 9. **Verification** - Tests that everything is working correctly
@@ -103,7 +103,7 @@ When you first run the application:
 - Or launch it from Applications: `open /Applications/Ollama.app`
 
 #### "Model not found"
-- Download the model manually: `ollama pull llama3.1:8b`
+- Download the model manually: `ollama pull gemma2:2b`
 - Check available models: `ollama list`
 
 #### "Permission denied" errors
@@ -138,7 +138,7 @@ python3 -m pip install -r requirements.txt
 #### Download AI Model
 ```bash
 ollama serve  # Start Ollama service
-ollama pull llama3.1:8b  # Download the model
+ollama pull gemma2:2b  # Download the model
 ```
 
 ## File Structure

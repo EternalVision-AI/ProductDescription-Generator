@@ -8,6 +8,7 @@ import time
 from colorama import Fore, Style, init
 import threading
 import queue as _queue
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from config import Config
 from llm_client import LLMClient
@@ -327,134 +328,182 @@ class ProductDescriptionProcessor:
                 print(f"{Fore.RED}❌ Still cannot create file after permission fix: {str(retry_e)}{Style.RESET_ALL}")
                 raise
         
-        # Process in batches
+        # Process in parallel batches for better performance
         total_count = len(valid_df)
         done_count = 0
         self._emit_progress(done_count, total_count)
-        for i in tqdm(range(0, len(valid_df), self.config.BATCH_SIZE), 
-                     desc="Processing batches"):
-            batch = valid_df.iloc[i:i + self.config.BATCH_SIZE]
-            processed_in_batch = self._process_batch_streaming(batch, output_file)
-            done_count += processed_in_batch
-            self._emit_progress(done_count, total_count)
+        
+        # Use parallel processing for better performance
+        max_workers = min(4, len(valid_df))  # Limit to 4 workers to avoid overwhelming the system
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all batches for parallel processing
+            future_to_batch = {}
+            for i in range(0, len(valid_df), self.config.BATCH_SIZE):
+                batch = valid_df.iloc[i:i + self.config.BATCH_SIZE]
+                future = executor.submit(self._process_batch_streaming, batch, output_file)
+                future_to_batch[future] = batch
             
-            # Add delay between batches to avoid overwhelming the API
-            if i + self.config.BATCH_SIZE < len(valid_df):
-                time.sleep(1)
+            # Process completed batches
+            for future in as_completed(future_to_batch):
+                try:
+                    processed_in_batch = future.result()
+                    done_count += processed_in_batch
+                    self._emit_progress(done_count, total_count)
+                except Exception as e:
+                    print(f"{Fore.RED}❌ Batch processing error: {str(e)}{Style.RESET_ALL}")
+                    self._log(f"Batch processing error: {str(e)}")
+                    # Still count the batch as processed to avoid hanging
+                    done_count += len(future_to_batch[future])
+                    self._emit_progress(done_count, total_count)
         
         print(f"{Fore.GREEN}All results saved to: {output_file}{Style.RESET_ALL}")
         self._log(f"All results saved to: {output_file}")
     
     def _process_batch_streaming(self, batch_df: pd.DataFrame, output_file: str) -> int:
         """
-        Process a batch of products and save results directly to CSV
+        Process a batch of products and save results directly to CSV with parallel processing
         
         Args:
             batch_df: DataFrame containing a batch of products
             output_file: Path to output CSV file
         """
         processed_rows = 0
-        for _, row in batch_df.iterrows():
-            try:
-                # Use dynamic column mapping if available
-                if hasattr(self, 'column_mapping') and self.column_mapping:
-                    part_number_col = self.column_mapping.get('part_number_column', 'Part Number')
-                    manufacturer_col = self.column_mapping.get('manufacturer_column', 'Manufacturer')
-                else:
-                    part_number_col = 'Part Number'
-                    manufacturer_col = 'Manufacturer'
-                
-                # Resolve part number robustly
-                part_number = ''
-                if part_number_col in row and pd.notna(row[part_number_col]):
-                    part_number = str(row[part_number_col]).strip()
-                elif 'Part Number' in row and pd.notna(row['Part Number']):
-                    part_number = str(row['Part Number']).strip()
-                else:
-                    # Try any column that looks like a PN
-                    for col in row.index:
-                        val = str(row[col]).strip()
-                        if val and any(c.isalpha() for c in val) and any(c.isdigit() for c in val):
-                            part_number = val
-                            break
-                if not part_number:
-                    print(f"{Fore.YELLOW}Skipping row with empty part number{Style.RESET_ALL}")
-                    # Write row with error message
-                    self._write_row_to_csv(row, "SKIPPED", "Empty part number", output_file)
+        
+        # Process products in parallel within the batch
+        max_workers = min(2, len(batch_df))  # Limit workers per batch
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all products in the batch for parallel processing
+            future_to_row = {}
+            for idx, row in batch_df.iterrows():
+                future = executor.submit(self._process_single_product, row, output_file)
+                future_to_row[future] = (idx, row)
+            
+            # Collect results as they complete
+            for future in as_completed(future_to_row):
+                try:
+                    result = future.result()
+                    if result:
+                        processed_rows += 1
+                except Exception as e:
+                    idx, row = future_to_row[future]
+                    part_num = str(row.get('Part Number', 'UNKNOWN')) if 'Part Number' in row else 'UNKNOWN'
+                    print(f"{Fore.RED}✗ Failed: {part_num} - {str(e)}{Style.RESET_ALL}")
+                    self._log(f"Failed: {part_num} → {str(e)}")
+                    # Write error row to CSV
+                    self._write_row_to_csv(row, "ERROR", f"Failed to generate: {str(e)}", output_file)
+                    self.stats['failed'] += 1
                     processed_rows += 1
-                    continue
-                
-                # Get manufacturer from detected column
-                manufacturer = 'Unknown Manufacturer'
-                if manufacturer_col in row and pd.notna(row[manufacturer_col]):
-                    manufacturer = str(row[manufacturer_col]).strip()
-                    if not manufacturer:
-                        manufacturer = 'Unknown Manufacturer'
-                else:
-                    manufacturer = 'Unknown Manufacturer'
-                
-                if not manufacturer or manufacturer == 'Unknown Manufacturer':
-                    print(f"{Fore.YELLOW}Warning: No manufacturer found for {part_number}, using default{Style.RESET_ALL}")
-                    self._log(f"No manufacturer found for {part_number}, using default")
-                else:
-                    print(f"{Fore.CYAN}Using manufacturer: {manufacturer} for {part_number}{Style.RESET_ALL}")
-                    self._log(f"Using manufacturer: {manufacturer} for {part_number}")
-                 
-                # Prefer specs from the dedicated specs CSV (dynamic via LLM) if available
-                reliable_specs: Dict[str, str] = {}
-                if self._is_specs_available():
-                    csv_specs = self.specs_lookup.get_specs(part_number)
-                    if csv_specs:
-                        reliable_specs.update(csv_specs)
-                        print(f"{Fore.CYAN}Found specs in specs CSV for {part_number}: {len(csv_specs)} fields{Style.RESET_ALL}")
-                        self._log(f"Found specs in specs CSV for {part_number}: {len(csv_specs)} fields")
- 
-                # Always merge ALL non-empty input row columns as specs (user requirement)
-                row_specs: Dict[str, str] = {}
-                for col in row.index:
-                    try:
-                        val = row[col]
-                        if pd.notna(val):
-                            sval = str(val).strip()
-                            if sval and not col.startswith('Unnamed:') and col not in ('WEB TITLE', 'WEB DESCRIPTION'):
-                                row_specs[col] = sval
-                    except Exception:
-                        continue
-                if row_specs:
-                    reliable_specs.update(row_specs)
-                    print(f"{Fore.CYAN}Merged {len(row_specs)} input columns for {part_number}{Style.RESET_ALL}")
-                    self._log(f"Merged {len(row_specs)} input columns for {part_number}")
- 
-                title, description = self.llm_client.generate_content(
-                    part_number,
-                    manufacturer,
-                    reliable_specs=reliable_specs
-                )
-
-                # Enforce title length <= 80
-                title = self._limit_title_length(title, 80)
-
-                # Write result directly to CSV
-                self._write_row_to_csv(row, title, description, output_file)
-                self.stats['processed'] += 1
-                processed_rows += 1
-                
-                # Print progress for first few items
-                if self.stats['processed'] <= 5:
-                    print(f"{Fore.GREEN}✓ Generated: {part_number} - {manufacturer}{Style.RESET_ALL}")
-                    self._log(f"Generated: {part_number} - {manufacturer}")
-                
-            except Exception as e:
-                part_num = str(row.get('Part Number', 'UNKNOWN')) if 'Part Number' in row else 'UNKNOWN'
-                logger.error(f"Failed to process {part_num}: {str(e)}")
-                # Write error row to CSV
-                self._write_row_to_csv(row, "ERROR", f"Failed to generate: {str(e)}", output_file)
-                self.stats['failed'] += 1
-                processed_rows += 1
-                 
-                print(f"{Fore.RED}✗ Failed: {part_num}{Style.RESET_ALL}")
-                self._log(f"Failed: {part_num} → {str(e)}")
+        
         return processed_rows
+
+    def _process_single_product(self, row: pd.Series, output_file: str) -> bool:
+        """
+        Process a single product
+        
+        Args:
+            row: DataFrame row containing product data
+            output_file: Path to output CSV file
+            
+        Returns:
+            True if processed successfully, False otherwise
+        """
+        try:
+            # Use dynamic column mapping if available
+            if hasattr(self, 'column_mapping') and self.column_mapping:
+                part_number_col = self.column_mapping.get('part_number_column', 'Part Number')
+                manufacturer_col = self.column_mapping.get('manufacturer_column', 'Manufacturer')
+            else:
+                part_number_col = 'Part Number'
+                manufacturer_col = 'Manufacturer'
+            
+            # Resolve part number robustly
+            part_number = ''
+            if part_number_col in row and pd.notna(row[part_number_col]):
+                part_number = str(row[part_number_col]).strip()
+            elif 'Part Number' in row and pd.notna(row['Part Number']):
+                part_number = str(row['Part Number']).strip()
+            else:
+                # Try any column that looks like a PN
+                for col in row.index:
+                    val = str(row[col]).strip()
+                    if val and any(c.isalpha() for c in val) and any(c.isdigit() for c in val):
+                        part_number = val
+                        break
+            if not part_number:
+                print(f"{Fore.YELLOW}Skipping row with empty part number{Style.RESET_ALL}")
+                # Write row with error message
+                self._write_row_to_csv(row, "SKIPPED", "Empty part number", output_file)
+                return True
+            
+            # Get manufacturer from detected column
+            manufacturer = 'Unknown Manufacturer'
+            if manufacturer_col in row and pd.notna(row[manufacturer_col]):
+                manufacturer = str(row[manufacturer_col]).strip()
+                if not manufacturer:
+                    manufacturer = 'Unknown Manufacturer'
+            else:
+                manufacturer = 'Unknown Manufacturer'
+            
+            if not manufacturer or manufacturer == 'Unknown Manufacturer':
+                print(f"{Fore.YELLOW}Warning: No manufacturer found for {part_number}, using default{Style.RESET_ALL}")
+                self._log(f"No manufacturer found for {part_number}, using default")
+            else:
+                print(f"{Fore.CYAN}Using manufacturer: {manufacturer} for {part_number}{Style.RESET_ALL}")
+                self._log(f"Using manufacturer: {manufacturer} for {part_number}")
+             
+            # Prefer specs from the dedicated specs CSV (dynamic via LLM) if available
+            reliable_specs: Dict[str, str] = {}
+            if self._is_specs_available():
+                csv_specs = self.specs_lookup.get_specs(part_number)
+                if csv_specs:
+                    reliable_specs.update(csv_specs)
+                    print(f"{Fore.CYAN}Found specs in specs CSV for {part_number}: {len(csv_specs)} fields{Style.RESET_ALL}")
+                    self._log(f"Found specs in specs CSV for {part_number}: {len(csv_specs)} fields")
+
+            # Always merge ALL non-empty input row columns as specs (user requirement)
+            row_specs: Dict[str, str] = {}
+            for col in row.index:
+                try:
+                    val = row[col]
+                    if pd.notna(val):
+                        sval = str(val).strip()
+                        if sval and not col.startswith('Unnamed:') and col not in ('WEB TITLE', 'WEB DESCRIPTION'):
+                            row_specs[col] = sval
+                except Exception:
+                    continue
+            if row_specs:
+                reliable_specs.update(row_specs)
+                print(f"{Fore.CYAN}Merged {len(row_specs)} input columns for {part_number}{Style.RESET_ALL}")
+                self._log(f"Merged {len(row_specs)} input columns for {part_number}")
+
+            # Generate new content
+            title, description = self.llm_client.generate_content(
+                part_number,
+                manufacturer,
+                reliable_specs=reliable_specs
+            )
+            
+            self.stats['processed'] += 1
+            
+            # Print progress for first few items
+            if self.stats['processed'] <= 5:
+                print(f"{Fore.GREEN}✓ Generated: {part_number} - {manufacturer}{Style.RESET_ALL}")
+                self._log(f"Generated: {part_number} - {manufacturer}")
+
+            # Enforce title length <= 80
+            title = self._limit_title_length(title, 80)
+
+            # Write result directly to CSV
+            self._write_row_to_csv(row, title, description, output_file)
+            return True
+            
+        except Exception as e:
+            part_num = str(row.get('Part Number', 'UNKNOWN')) if 'Part Number' in row else 'UNKNOWN'
+            logger.error(f"Failed to process {part_num}: {str(e)}")
+            # Write error row to CSV
+            self._write_row_to_csv(row, "ERROR", f"Failed to generate: {str(e)}", output_file)
+            self.stats['failed'] += 1
+            return False
     
     def _write_row_to_csv(self, row: pd.Series, title: str, description: str, output_file: str):
         """Write a single row with generated content to CSV file with Mac permission handling"""
@@ -670,6 +719,12 @@ class ProductDescriptionProcessor:
         print(f"{Fore.YELLOW}⏭ Skipped: {self.stats['skipped']}{Style.RESET_ALL}")
         print(f"⏱ Duration: {duration}")
         print(f"📁 Output file: {output_file}")
+        
+        # Calculate performance metrics
+        if duration.total_seconds() > 0:
+            items_per_second = self.stats['processed'] / duration.total_seconds()
+            print(f"⚡ Processing speed: {items_per_second:.2f} items/second")
+        
         print(f"{Fore.CYAN}{'='*50}{Style.RESET_ALL}")
     
     def process_single_product(self, part_number: str, manufacturer: str) -> Tuple[str, str]:
@@ -722,6 +777,8 @@ class ProductDescriptionProcessor:
             if isinstance(result, Exception):
                 raise result
             title, description = result
+            
+            self.stats['processed'] += 1
             
             print(f"\n{Fore.GREEN}Generated Content:{Style.RESET_ALL}")
             print(f"{Fore.YELLOW}Title:{Style.RESET_ALL} {title}")

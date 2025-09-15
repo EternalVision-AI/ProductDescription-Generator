@@ -385,17 +385,17 @@ setup_ollama_model() {
     done
     
     # Check if model is already installed
-    print_status "Checking for existing llama3.1:8b model..."
-    if curl -s http://localhost:11434/api/tags | grep -q "llama3.1:8b"; then
-        print_success "Model llama3.1:8b is already installed"
+    print_status "Checking for existing gemma2:2b model..."
+    if curl -s http://localhost:11434/api/tags | grep -q "gemma2:2b"; then
+        print_success "Model gemma2:2b is already installed"
         return 0
     fi
     
     # Download the model
-    print_status "Downloading llama3.1:8b model (this may take several minutes)..."
+    print_status "Downloading gemma2:2b model (this may take several minutes)..."
     print_warning "This is a large download (~4.9GB). Please be patient."
     
-    if ollama pull llama3.1:8b; then
+    if ollama pull gemma2:2b; then
         print_success "Model downloaded successfully"
     else
         print_error "Failed to download model. Please check your internet connection and try again."
@@ -657,7 +657,7 @@ show_final_instructions() {
     echo "   • Python $PYTHON_VERSION"
     echo "   • All required Python packages"
     echo "   • Ollama AI service"
-    echo "   • Llama3.1:8b model"
+    echo "   • gemma2:2b model"
     echo
     echo "🚀 How to run the application:"
     echo "   1. Double-click 'Product Description Generator.app' on your desktop"
@@ -693,7 +693,7 @@ main() {
     echo "   • Python $PYTHON_VERSION"
     echo "   • All required dependencies"
     echo "   • Ollama AI service"
-    echo "   • Llama3.1:8b model"
+    echo "   • gemma2:2b model"
     echo
     echo "The installation may take 10-15 minutes depending on your internet speed."
     echo

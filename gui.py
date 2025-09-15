@@ -103,6 +103,16 @@ class ProductGeneratorGUI:
             height=35
         ).pack(side="right")
 
+        # LLM Model settings
+        llm_frame = ctk.CTkFrame(left_col)
+        llm_frame.pack(fill="x", padx=20, pady=10)
+
+        ctk.CTkLabel(llm_frame, text="LLM Model Name:", font=ctk.CTkFont(size=14)).pack(anchor="w", padx=10, pady=(10, 5))
+
+        self.llm_model_var = ctk.StringVar(value=self.config.OLLAMA_MODEL)
+        llm_entry = ctk.CTkEntry(llm_frame, textvariable=self.llm_model_var, height=35, placeholder_text="e.g., gemma2:2b, llama3.1:8b")
+        llm_entry.pack(fill="x", padx=10, pady=(0, 10))
+
         # Key Specs settings
         specs_frame = ctk.CTkFrame(left_col)
         specs_frame.pack(fill="x", padx=20, pady=10)
@@ -299,6 +309,15 @@ class ProductGeneratorGUI:
                 # Check if configured model exists, pull if missing
                 try:
                     from llm_client import LLMClient
+                    
+                    # Get model name from GUI input
+                    model_name = self.llm_model_var.get().strip()
+                    if not model_name:
+                        model_name = self.config.OLLAMA_MODEL
+                        self.llm_model_var.set(model_name)
+                    
+                    # Update config with the model name from GUI
+                    self.config.OLLAMA_MODEL = model_name
                     client = LLMClient(self.config)
                     
                     # Test connection
@@ -307,7 +326,6 @@ class ProductGeneratorGUI:
                         self.set_status("Setup failed - Cannot connect to Ollama")
                         return
                     
-                    model_name = self.config.OLLAMA_MODEL
                     models = client.list_models()
                     if model_name in models:
                         self.enqueue_message(f"✅ Model available: {model_name}")
@@ -347,8 +365,9 @@ class ProductGeneratorGUI:
             self.enqueue_message(f"🧪 Testing: {part_number} - {manufacturer}")
             
             try:
-                # Apply HPS settings and recreate processor to ensure fresh config
+                # Apply settings and recreate processor to ensure fresh config
                 self.config.SPECS_CSV_PATH = self.specs_path_var.get().strip() or self.config.SPECS_CSV_PATH
+                self.config.OLLAMA_MODEL = self.llm_model_var.get().strip() or self.config.OLLAMA_MODEL
                 self.processor = ProductDescriptionProcessor(self.config)
                 # Wire UI callbacks
                 self.processor.log_callback = self.enqueue_message
@@ -403,8 +422,9 @@ class ProductGeneratorGUI:
                     self.set_status("Setup failed - Output directory issue")
                     return
                 
-                # Recreate processor so it picks up current HPS settings
+                # Recreate processor so it picks up current settings
                 self.config.SPECS_CSV_PATH = self.specs_path_var.get().strip() or self.config.SPECS_CSV_PATH
+                self.config.OLLAMA_MODEL = self.llm_model_var.get().strip() or self.config.OLLAMA_MODEL
                 self.processor = ProductDescriptionProcessor(self.config)
                 # Wire UI callbacks
                 self.processor.log_callback = self.enqueue_message
@@ -454,6 +474,7 @@ class ProductGeneratorGUI:
             try:
                 # Create processor for testing
                 self.config.SPECS_CSV_PATH = self.specs_path_var.get().strip() or self.config.SPECS_CSV_PATH
+                self.config.OLLAMA_MODEL = self.llm_model_var.get().strip() or self.config.OLLAMA_MODEL
                 self.processor = ProductDescriptionProcessor(self.config)
                 
                 # Test CSV loading

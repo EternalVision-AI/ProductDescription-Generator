@@ -72,12 +72,12 @@ def setup_ollama():
         
         # Check if model exists
         models = client.list_models()
-        if 'llama3.1:8b' in models:
-            print("✅ Llama3.1:8b model is already available")
+        if 'gemma2:2b' in models:
+            print("✅ gemma2:2b model is already available")
             return True
         else:
-            print("📥 Downloading Llama3.1:8b model...")
-            if client.pull_model('llama3.1:8b'):
+            print("📥 Downloading gemma2:2b model...")
+            if client.pull_model('gemma2:2b'):
                 print("✅ Model downloaded successfully")
                 return True
             else:
